@@ -25,15 +25,8 @@ export interface StoredTransfer {
   fromNetworkId: HopperNetworkId;
   toNetworkId: HopperNetworkId;
   amount: string;
-  amountOutEstimated?: string;
   status: TransferStatus;
   steps: TransferStepRecord[];
-  route?: {
-    provider: string;
-    routeId?: string;
-    etaSeconds?: number;
-    feeAmount?: string;
-  };
   explorerLinks?: {
     source?: string;
     destination?: string;

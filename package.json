@@ -14,6 +14,7 @@
     "@floating-ui/react": "^0.27.16",
     "@headlessui/react": "^2.2.9",
     "@radix-ui/react-dialog": "^1.1.15",
+    "@rainbow-me/rainbowkit": "^2.2.9",
     "@tanstack/react-query": "^5.90.9",
     "@walletconnect/ethereum-provider": "^2.23.0",
     "clsx": "^2.1.1",

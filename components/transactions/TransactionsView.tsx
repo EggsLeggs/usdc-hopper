@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
-import { formatAmount, formatDateTime, formatDuration } from "@/lib/format";
+import { formatAmount, formatDateTime } from "@/lib/format";
 import { getNetworkByChainId, networkById } from "@/lib/chains";
 import { useTransfers } from "@/hooks/useTransfers";
 import { useTransferWatcher } from "@/hooks/useTransferWatcher";
@@ -136,28 +136,19 @@ export function TransactionsView() {
                       <p className="font-semibold text-white">
                         {formatDateTime(transfer.createdAt)}
                       </p>
-                      <p className="text-xs text-slate-400">
-                        ETA {formatDuration(transfer.route?.etaSeconds)}
-                      </p>
                     </td>
                     <td className="px-4 py-4 align-top">
                       <p className="font-semibold text-white">
                         {from.shortName} → {to.shortName}
                       </p>
                       <p className="text-xs text-slate-400">
-                        {transfer.route?.provider ?? "Arc Router"}
+                        Chain IDs {from.chainId} → {to.chainId}
                       </p>
                     </td>
                     <td className="px-4 py-4 align-top">
                       <p className="font-semibold text-white">
-                        {formatAmount(transfer.amount)} →{" "}
-                        {formatAmount(transfer.amountOutEstimated ?? "0")} USDC
+                        {formatAmount(transfer.amount)} USDC
                       </p>
-                      {transfer.route?.feeAmount && (
-                        <p className="text-xs text-slate-400">
-                          Fees {formatAmount(transfer.route.feeAmount)} USDC
-                        </p>
-                      )}
                     </td>
                     <td className="px-4 py-4 align-top">
                       <span

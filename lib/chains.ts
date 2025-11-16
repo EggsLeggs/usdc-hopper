@@ -1,6 +1,6 @@
 import type { ChainDefinition } from "@circle-fin/bridge-kit";
 import { createPublicClient, defineChain, http, type Chain } from "viem";
-import { avalancheFuji, baseSepolia, sepolia } from "viem/chains";
+import { baseSepolia, sepolia } from "viem/chains";
 
 import { env } from "./env";
 import { requireCircleChain } from "./bridgeKit";
@@ -30,7 +30,6 @@ const arcTestnet = defineChain({
 export type HopperNetworkId =
   | "ethereum-sepolia"
   | "base-sepolia"
-  | "avalanche-fuji"
   | "arc-testnet";
 
 export interface HopperNetwork {
@@ -158,17 +157,6 @@ export const supportedNetworks: HopperNetwork[] = [
     wagmiChain: baseSepolia,
     circleKey: "Base_Sepolia",
     rpcEnvKey: 84532,
-  }),
-  createNetwork({
-    id: "avalanche-fuji",
-    label: "Avalanche Fuji",
-    sublabel: "Avalanche C-Chain testnet",
-    shortName: "Fuji",
-    description: "Near-instant finality with low confirmation targets.",
-    color: "#E84142",
-    wagmiChain: avalancheFuji,
-    circleKey: "Avalanche_Fuji",
-    rpcEnvKey: 43113,
   }),
   createNetwork({
     id: "arc-testnet",

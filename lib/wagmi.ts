@@ -1,5 +1,5 @@
 import { createConfig, http } from "wagmi";
-import { injected, metaMask, walletConnect } from "wagmi/connectors";
+import { metaMask } from "wagmi/connectors";
 
 import { env } from "./env";
 import { supportedNetworks } from "./chains";
@@ -13,26 +13,15 @@ const transports = chains.reduce((acc, chain) => {
   return acc;
 }, {} as Record<number, ReturnType<typeof http>>);
 
-const walletConnectProjectId =
-  env.walletConnectProjectId || "00000000000000000000000000000000";
-
 export const wagmiConfig = createConfig({
   ssr: true,
   chains,
   transports,
   connectors: [
-    injected({
-      shimDisconnect: true,
-    }),
-    metaMask(),
-    walletConnect({
-      projectId: walletConnectProjectId,
-      showQrModal: true,
-      metadata: {
+    metaMask({
+      dappMetadata: {
         name: "USDC Hopper",
-        description: "Move testnet USDC with Circle Bridge Kit and Arc.",
         url: env.appUrl,
-        icons: ["https://avatars.githubusercontent.com/u/86017329?s=200&v=4"],
       },
     }),
   ],

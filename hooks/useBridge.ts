@@ -1,357 +1,361 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useAccount, useSwitchChain } from "wagmi";
 import { createAdapterFromProvider } from "@circle-fin/adapter-viem-v2";
 import type { BridgeResult } from "@circle-fin/bridge-kit";
-import { useAccount } from "wagmi";
+import type { EIP1193Provider } from "viem";
+import { createPublicClient, formatUnits, http } from "viem";
 
-import type { ArcRouteQuote } from "@/lib/arc";
-import type { HopperNetwork } from "@/lib/chains";
 import { bridgeKit } from "@/lib/bridgeKit";
-import type {
-  StoredTransfer,
-  TransferStepRecord,
-  TransferStepState,
-  TransferStatus,
-} from "@/lib/storage";
+import {
+  getNetworkByChainId,
+  networkById,
+  supportedNetworks,
+} from "@/lib/chains";
 
-type BridgeRequest = {
-  fromNetwork: HopperNetwork;
-  toNetwork: HopperNetwork;
+export type BridgeToken = "USDC";
+
+export type BridgeStep =
+  | "idle"
+  | "switching-network"
+  | "approving"
+  | "signing-bridge"
+  | "waiting-receive-message"
+  | "success"
+  | "error";
+
+export interface BridgeDirection {
+  fromChainId: number;
+  toChainId: number;
+}
+
+export interface BridgeState {
+  step: BridgeStep;
+  error: string | null;
+  result: BridgeResult | null;
+  isLoading: boolean;
+  sourceTxHash?: string;
+  receiveTxHash?: string;
+  direction?: BridgeDirection;
+}
+
+export interface BridgeExecutionResult {
   amount: string;
-  quote?: ArcRouteQuote;
-  recipient?: string;
-};
-
-type UseBridgeOptions = {
-  persistTransfer: (record: StoredTransfer) => void;
-};
-
-type BridgeUiState =
-  | {
-      status: "idle";
-      steps: TransferStepRecord[];
-    }
-  | {
-      status: "pending";
-      steps: TransferStepRecord[];
-      message?: string;
-      transferId?: string;
-    }
-  | {
-      status: "success";
-      steps: TransferStepRecord[];
-      transferId: string;
-    }
-  | {
-      status: "error";
-      steps: TransferStepRecord[];
-      message: string;
-    };
-
-const DEFAULT_STEPS: TransferStepRecord[] = [
-  { id: "approval", label: "Approval", state: "pending" },
-  { id: "burn", label: "Sending on source chain", state: "pending" },
-  { id: "attestation", label: "Circle is confirming", state: "pending" },
-  { id: "mint", label: "Minting on destination chain", state: "pending" },
-];
-
-const STEP_NAME_ALIASES: Record<string, string> = {
-  approve: "approval",
-  approval: "approval",
-  allowance: "approval",
-  authorize: "approval",
-  burn: "burn",
-  deposit: "burn",
-  send: "burn",
-  transfer: "burn",
-  attestation: "attestation",
-  attest: "attestation",
-  confirm: "attestation",
-  message: "attestation",
-  mint: "mint",
-  minting: "mint",
-  receive: "mint",
-  withdrawal: "mint",
-  withdraw: "mint",
-};
-
-type BridgeResultStep = BridgeResult["steps"][number] & {
-  transactionHash?: string;
-  hash?: string;
-  txHashes?: string[];
-  transactionHashes?: string[];
-};
-
-function cloneDefaultSteps(): TransferStepRecord[] {
-  return DEFAULT_STEPS.map((step) => ({ ...step }));
+  direction: BridgeDirection;
+  result: BridgeResult;
+  sourceTxHash?: string;
+  receiveTxHash?: string;
 }
 
-function extractTxHash(value?: string | null): `0x${string}` | undefined {
-  if (!value) return undefined;
-  const match = value.match(/0x[0-9a-fA-F]{64}/);
-  return match ? (match[0] as `0x${string}`) : undefined;
-}
+type TokenInfo = {
+  symbol: string;
+  name: string;
+  decimals: number;
+  contractAddress: `0x${string}`;
+};
 
-function resolveTxHash(
-  step?: BridgeResultStep,
-  fallbackExplorerUrls: Array<string | undefined> = []
-): `0x${string}` | undefined {
-  if (!step) return undefined;
-
-  const directCandidates = [
-    step.txHash,
-    step.transactionHash,
-    step.hash,
-    step.txHashes?.[0],
-    step.transactionHashes?.[0],
-  ];
-
-  for (const candidate of directCandidates) {
-    const hash = extractTxHash(candidate);
-    if (hash) {
-      return hash;
-    }
-  }
-
-  const explorerCandidates = [step.explorerUrl, ...fallbackExplorerUrls];
-  for (const explorerUrl of explorerCandidates) {
-    const hash = extractTxHash(explorerUrl);
-    if (hash) {
-      return hash;
-    }
-  }
-
-  return undefined;
-}
-
-function mapSteps(
-  result: BridgeResult,
-  fromNetwork: HopperNetwork,
-  toNetwork: HopperNetwork
-): TransferStepRecord[] {
-  const chainByStep: Record<string, number | undefined> = {
-    approval: fromNetwork.chainId,
-    burn: fromNetwork.chainId,
-    attestation: undefined,
-    mint: toNetwork.chainId,
+export const CHAIN_TOKENS: Record<
+  number,
+  Record<BridgeToken, TokenInfo>
+> = supportedNetworks.reduce((acc, network) => {
+  acc[network.chainId] = {
+    USDC: {
+      symbol: "USDC",
+      name: "USD Coin",
+      decimals: 6,
+      contractAddress: network.usdcAddress,
+    },
   };
+  return acc;
+}, {} as Record<number, Record<BridgeToken, TokenInfo>>);
 
-  return DEFAULT_STEPS.map((step) => {
-    const match = result.steps.find((candidate) => {
-      const candidateName = candidate.name.toLowerCase().trim();
-      const normalizedName = STEP_NAME_ALIASES[candidateName] || candidateName;
+export const SEPOLIA_CHAIN_ID = networkById["ethereum-sepolia"].chainId;
+export const BASE_SEPOLIA_CHAIN_ID = networkById["base-sepolia"].chainId;
+export const ARC_CHAIN_ID = networkById["arc-testnet"].chainId;
 
-      if (normalizedName === step.id || candidateName === step.id) {
-        return true;
-      }
+const RPC_FALLBACKS: Record<number, string[]> = {
+  [SEPOLIA_CHAIN_ID]: [
+    "https://ethereum-sepolia-rpc.publicnode.com",
+    "https://rpc.sepolia.org",
+    "https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161",
+  ],
+  [BASE_SEPOLIA_CHAIN_ID]: [
+    "https://sepolia.base.org",
+    "https://base-sepolia.blockpi.network/v1/rpc/public",
+  ],
+  [ARC_CHAIN_ID]: [
+    "https://rpc.testnet.arc.network/",
+    "https://rpc.testnet.arc.network",
+  ],
+};
 
-      if (
-        candidateName.includes(step.id) ||
-        step.id.includes(candidateName) ||
-        candidateName.includes(normalizedName) ||
-        normalizedName.includes(step.id)
-      ) {
-        return true;
-      }
+const ERC20_ABI = [
+  {
+    constant: true,
+    inputs: [{ name: "_owner", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ name: "balance", type: "uint256" }],
+    type: "function",
+  },
+] as const;
 
-      return false;
-    });
+type RpcClient = ReturnType<typeof createPublicClient>;
 
-    let state: TransferStepState = step.state;
-    if (match) {
-      if (match.state === "success" || match.state === "noop") {
-        state = "success";
-      } else if (match.state === "error") {
-        state = "error";
-      } else if (match.state === "pending") {
-        state = "pending";
-      }
-    } else {
-      console.debug(
-        `[Bridge] Step "${step.id}" missing from Circle response`,
-        result.steps.map((candidate) => candidate.name)
-      );
+const rpcClientCache = new Map<string, RpcClient>();
+
+function getRpcCandidates(chainId: number) {
+  const network = getNetworkByChainId(chainId);
+  const defaults = RPC_FALLBACKS[chainId] ?? [];
+  const primary = network?.rpcUrl ? [network.rpcUrl] : [];
+  const merged = [...primary, ...defaults].filter(Boolean);
+  const unique = Array.from(new Set(merged));
+  if (!unique.length) {
+    throw new Error(`No RPC endpoints configured for chain ${chainId}`);
+  }
+  return unique;
+}
+
+async function getPublicRpcClient(chainId: number): Promise<RpcClient> {
+  const candidates = getRpcCandidates(chainId);
+  let lastError: unknown;
+
+  for (const rpcUrl of candidates) {
+    if (rpcClientCache.has(rpcUrl)) {
+      return rpcClientCache.get(rpcUrl)!;
     }
 
-    const txHash = resolveTxHash(match as BridgeResultStep | undefined);
-
-    return {
-      ...step,
-      state,
-      txHash,
-      explorerUrl: match?.explorerUrl,
-      chainId: chainByStep[step.id],
-    };
-  });
-}
-
-function deriveStatus(result: BridgeResult): TransferStatus {
-  if (result.state === "success") return "completed";
-  if (result.state === "pending") return "minting";
-  return "failed";
-}
-
-export function useBridge({ persistTransfer }: UseBridgeOptions) {
-  const { address, connector } = useAccount();
-  const [uiState, setUiState] = useState<BridgeUiState>({
-    status: "idle",
-    steps: cloneDefaultSteps(),
-  });
-
-  const reset = useCallback(() => {
-    setUiState({
-      status: "idle",
-      steps: cloneDefaultSteps(),
-    });
-  }, []);
-
-  const execute = useCallback(
-    async ({
-      fromNetwork,
-      toNetwork,
-      amount,
-      quote,
-      recipient,
-    }: BridgeRequest) => {
-      if (!connector) {
-        throw new Error("Connect a wallet to bridge USDC.");
+    try {
+      const network = getNetworkByChainId(chainId);
+      if (!network) {
+        throw new Error(`Unsupported chain ${chainId}`);
       }
 
-      if (!address && !recipient) {
-        throw new Error("No recipient address found.");
-      }
-
-      const transferId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const uiSteps = cloneDefaultSteps();
-      const baseRecord: StoredTransfer = {
-        id: transferId,
-        createdAt: now,
-        updatedAt: now,
-        fromNetworkId: fromNetwork.id,
-        toNetworkId: toNetwork.id,
-        amount,
-        amountOutEstimated: quote?.amountOut,
-        status: "pending",
-        steps: cloneDefaultSteps(),
-        route: quote && {
-          provider: quote.provider,
-          routeId: quote.routeId,
-          etaSeconds: quote.etaSeconds,
-          feeAmount: quote.feeAmount,
-        },
-      };
-
-      persistTransfer(baseRecord);
-
-      setUiState({
-        status: "pending",
-        steps: uiSteps,
-        message: "Awaiting wallet confirmations…",
-        transferId,
+      const client = createPublicClient({
+        chain: network.wagmiChain,
+        transport: http(rpcUrl, {
+          retryCount: 2,
+          timeout: 8000,
+        }),
       });
 
-      const provider = await connector.getProvider();
-      const adapter = await createAdapterFromProvider({
-        provider,
-      });
+      await client.getBlockNumber();
+      rpcClientCache.set(rpcUrl, client);
+      return client;
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+  }
+
+  const message =
+    lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Failed to connect to RPC (${chainId}): ${message}`);
+}
+
+export function useBridge() {
+  const { address, connector, isConnected, chainId } = useAccount();
+  const { switchChain } = useSwitchChain();
+
+  const [state, setState] = useState<BridgeState>({
+    step: "idle",
+    error: null,
+    result: null,
+    isLoading: false,
+  });
+
+  const [tokenBalance, setTokenBalance] = useState<string>("0");
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+  const [balanceError, setBalanceError] = useState<string>("");
+
+  const fetchTokenBalance = useCallback(
+    async (token: BridgeToken, sourceChainId: number) => {
+      if (!address) return;
+
+      setIsLoadingBalance(true);
+      setBalanceError("");
 
       try {
+        const chainTokens = CHAIN_TOKENS[sourceChainId];
+        if (!chainTokens) {
+          throw new Error(`Chain ${sourceChainId} not supported`);
+        }
+
+        const tokenInfo = chainTokens[token];
+        const client = await getPublicRpcClient(sourceChainId);
+        const balance = await client.readContract({
+          address: tokenInfo.contractAddress,
+          abi: ERC20_ABI,
+          functionName: "balanceOf",
+          args: [address as `0x${string}`],
+        });
+
+        const formatted = formatUnits(balance as bigint, tokenInfo.decimals);
+        setTokenBalance(formatted);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unable to fetch balance.";
+        console.error(`[Bridge] Balance error (${sourceChainId}):`, message);
+        setTokenBalance("0");
+        setBalanceError(message);
+      } finally {
+        setIsLoadingBalance(false);
+      }
+    },
+    [address]
+  );
+
+  const reset = useCallback(() => {
+    setState({
+      step: "idle",
+      error: null,
+      result: null,
+      isLoading: false,
+      sourceTxHash: undefined,
+      receiveTxHash: undefined,
+      direction: undefined,
+    });
+    setTokenBalance("0");
+    setBalanceError("");
+  }, []);
+
+  const bridge = useCallback(
+    async ({
+      token,
+      amount,
+      direction,
+    }: {
+      token: BridgeToken;
+      amount: string;
+      direction: BridgeDirection;
+    }): Promise<BridgeExecutionResult> => {
+      if (!isConnected || !address) {
+        throw new Error("Connect MetaMask to bridge USDC.");
+      }
+
+      if (!amount || Number(amount) <= 0) {
+        throw new Error(`Enter a valid ${token} amount to bridge.`);
+      }
+
+      const { fromChainId, toChainId } = direction;
+      if (fromChainId === toChainId) {
+        throw new Error("Select two different networks to bridge between.");
+      }
+
+      const fromNetwork = getNetworkByChainId(fromChainId);
+      const toNetwork = getNetworkByChainId(toChainId);
+
+      if (!fromNetwork || !toNetwork) {
+        throw new Error("One of the selected chains is not supported.");
+      }
+
+      try {
+        setState((prev) => ({
+          ...prev,
+          step: "idle",
+          error: null,
+          isLoading: true,
+        }));
+
+        let provider: EIP1193Provider | undefined;
+        if (connector) {
+          provider = (await connector.getProvider()) as EIP1193Provider;
+        } else if (typeof window !== "undefined" && window.ethereum) {
+          provider = window.ethereum as EIP1193Provider;
+        }
+
+        if (!provider) {
+          throw new Error("MetaMask provider not detected.");
+        }
+
+        if (chainId !== fromChainId) {
+          setState((prev) => ({ ...prev, step: "switching-network" }));
+          await switchChain({ chainId: fromChainId });
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+
+        setState((prev) => ({ ...prev, step: "approving" }));
+
+        const adapter = await createAdapterFromProvider({ provider });
+
         const result = await bridgeKit.bridge({
-          from: { adapter, chain: fromNetwork.circleChain },
+          from: {
+            adapter,
+            chain: fromNetwork.circleChain,
+          },
           to: {
             adapter,
             chain: toNetwork.circleChain,
-            recipientAddress: recipient ?? address!,
+            recipientAddress: address,
           },
           amount,
-          config: { transferSpeed: "FAST" },
         });
 
-        // Log bridge result for debugging
-        console.log("Bridge result:", {
-          state: result.state,
-          steps: result.steps.map((s) => ({
-            name: s.name,
-            state: s.state,
-            txHash: s.txHash,
-            explorerUrl: s.explorerUrl,
-          })),
-        });
-
-        const steps = mapSteps(result, fromNetwork, toNetwork);
-
-        // Log mapped steps for debugging
-        console.log("Mapped steps:", steps);
-        const record: StoredTransfer = {
-          ...baseRecord,
-          updatedAt: new Date().toISOString(),
-          status: deriveStatus(result),
-          steps,
-          explorerLinks: {
-            source: steps.find((step) => step.id === "burn")?.explorerUrl,
-            destination: steps.find((step) => step.id === "mint")?.explorerUrl,
+        const { sourceTxHash, receiveTxHash } = result.steps.reduce(
+          (acc, step) => {
+            if (step.name === "burn" && step.txHash) {
+              acc.sourceTxHash = step.txHash;
+            }
+            if (step.name === "mint" && step.txHash) {
+              acc.receiveTxHash = step.txHash;
+            }
+            if (!acc.sourceTxHash && step.name === "approve" && step.txHash) {
+              acc.sourceTxHash = step.txHash;
+            }
+            return acc;
           },
-          errorMessage: undefined,
+          {
+            sourceTxHash: undefined as string | undefined,
+            receiveTxHash: undefined as string | undefined,
+          }
+        );
+
+        setState({
+          step: "success",
+          error: null,
+          result,
+          isLoading: false,
+          sourceTxHash,
+          receiveTxHash,
+          direction,
+        });
+
+        return {
+          amount,
+          direction,
+          result,
+          sourceTxHash,
+          receiveTxHash,
         };
-
-        persistTransfer(record);
-
-        // Always store transferId so we can track this transfer
-        // If bridge result is still pending, keep UI state as pending so watcher can update it
-        if (result.state === "pending") {
-          setUiState({
-            status: "pending",
-            steps,
-            message: "Bridge in progress…",
-            transferId: record.id,
-          });
-        } else {
-          setUiState({
-            status: result.state === "success" ? "success" : "error",
-            steps,
-            transferId: record.id,
-            ...(result.state === "error" && {
-              message: "Bridge completed with errors",
-            }),
-          });
-        }
-
-        return record.id;
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Bridge request failed.";
-
-        persistTransfer({
-          ...baseRecord,
-          updatedAt: new Date().toISOString(),
-          status: "failed",
-          steps: baseRecord.steps.map((step, index) =>
-            index === 0
-              ? {
-                  ...step,
-                  state: "error",
-                }
-              : step
-          ),
-          errorMessage: message,
-        });
-
-        setUiState({
-          status: "error",
-          steps: cloneDefaultSteps(),
-          message,
+          error instanceof Error ? error.message : "Bridge transaction failed.";
+        setState({
+          step: "error",
+          error: message,
+          result: null,
+          isLoading: false,
         });
         throw error;
       }
     },
-    [address, connector, persistTransfer]
+    [address, chainId, connector, isConnected, switchChain]
   );
 
   return {
-    execute,
+    state,
+    tokenBalance,
+    isLoadingBalance,
+    balanceError,
+    fetchTokenBalance,
+    bridge,
     reset,
-    uiState,
+    currentChainId: chainId,
   };
+}
+
+declare global {
+  interface Window {
+    ethereum?: EIP1193Provider;
+  }
 }
