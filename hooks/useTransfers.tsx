@@ -17,29 +17,38 @@ export function useTransfers() {
     return () => window.removeEventListener("storage", sync);
   }, []);
 
-  const persist = useCallback((next: StoredTransfer[]) => {
-    setTransfers(next);
-    persistTransfers(next);
-  }, []);
+  const persist = useCallback(
+    (updater: (current: StoredTransfer[]) => StoredTransfer[]) => {
+      setTransfers((current) => {
+        const next = updater(current);
+        persistTransfers(next);
+        return next;
+      });
+    },
+    [],
+  );
 
-  const addTransfer = useCallback((transfer: StoredTransfer) => {
-    persist(
-      [transfer, ...transfers.filter((item) => item.id !== transfer.id)].slice(
-        0,
-        25,
-      ),
-    );
-  }, [persist, transfers]);
+  const addTransfer = useCallback(
+    (transfer: StoredTransfer) => {
+      persist((current) =>
+        [transfer, ...current.filter((item) => item.id !== transfer.id)].slice(
+          0,
+          25,
+        ),
+      );
+    },
+    [persist],
+  );
 
   const updateTransfer = useCallback(
     (id: string, updater: (transfer: StoredTransfer) => StoredTransfer) => {
-      persist(
-        transfers.map((transfer) =>
+      persist((current) =>
+        current.map((transfer) =>
           transfer.id === id ? updater(transfer) : transfer,
         ),
       );
     },
-    [persist, transfers],
+    [persist],
   );
 
   const refreshTransfers = useCallback(() => {

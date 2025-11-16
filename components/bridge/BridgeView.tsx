@@ -24,12 +24,14 @@ import {
 import { formatAmount, formatDateTime } from "@/lib/format";
 import {
   type StoredTransfer,
+  type TransferStatus,
   type TransferStepRecord,
   type TransferStepState,
 } from "@/lib/storage";
 import { useBridge } from "@/hooks/useBridge";
 import { useTransfers } from "@/hooks/useTransfers";
 import { useTransferWatcher } from "@/hooks/useTransferWatcher";
+import { bridgeKit } from "@/lib/bridgeKit";
 
 const chainIcons: Record<number, string> = {
   [networkById[defaultFromNetworkId].chainId]: "/sepolia.png",
@@ -104,6 +106,13 @@ type BridgeResultStep = BridgeResult["steps"][number] & {
   transactionHashes?: string[];
 };
 
+type BridgeEventName = "approve" | "burn" | "fetchAttestation" | "mint";
+
+type BridgeEventPayload = {
+  method: BridgeEventName;
+  values: BridgeResultStep;
+};
+
 function cloneDefaultSteps(): TransferStepRecord[] {
   return DEFAULT_STEPS.map((step) => ({ ...step }));
 }
@@ -149,6 +158,36 @@ function buildExplorerUrl(network?: HopperNetwork, txHash?: string) {
     ? network.blockExplorerUrl.replace(/\/$/, "")
     : "";
   return base ? `${base}/tx/${txHash}` : undefined;
+}
+
+function mapBridgeStepState(state: BridgeResultStep["state"]): TransferStepState {
+  if (state === "error") return "error";
+  if (state === "success" || state === "noop") return "success";
+  return "pending";
+}
+
+function deriveTransferStatus(steps: TransferStepRecord[]): TransferStatus {
+  if (steps.some((step) => step.state === "error")) {
+    return "failed";
+  }
+  const allSuccess = steps.every((step) => step.state === "success");
+  if (allSuccess) {
+    return "completed";
+  }
+
+  const attestation = steps.find((step) => step.id === "attestation");
+  const burn = steps.find((step) => step.id === "burn");
+  const mint = steps.find((step) => step.id === "mint");
+
+  if (attestation?.state === "success" && mint?.state !== "success") {
+    return "minting";
+  }
+
+  if (burn?.state === "success") {
+    return "confirming";
+  }
+
+  return "pending";
 }
 
 function mapBridgeSteps(
@@ -209,6 +248,108 @@ function mapBridgeSteps(
       chainId: chainByStep[template.id],
     };
   });
+}
+
+function attachBridgeEventHandlers({
+  transferId,
+  fromNetwork,
+  toNetwork,
+  updateTransfer,
+}: {
+  transferId: string;
+  fromNetwork: HopperNetwork;
+  toNetwork: HopperNetwork;
+  updateTransfer: (
+    id: string,
+    updater: (transfer: StoredTransfer) => StoredTransfer,
+  ) => void;
+}) {
+  const applyStepUpdate = (
+    stepId: TransferStepRecord["id"],
+    payload: BridgeEventPayload,
+  ) => {
+    const rawStep = payload.values;
+    updateTransfer(transferId, (current) => {
+      const nextSteps = current.steps.map((existing) => {
+        if (existing.id !== stepId) {
+          return existing;
+        }
+        const txHash =
+          resolveTxHash(rawStep, [
+            stepId === "burn"
+              ? buildExplorerUrl(fromNetwork, rawStep.txHash)
+              : undefined,
+            stepId === "mint"
+              ? buildExplorerUrl(toNetwork, rawStep.txHash)
+              : undefined,
+          ]) ?? existing.txHash;
+        const explorerUrl =
+          rawStep.explorerUrl ??
+          (stepId === "burn"
+            ? buildExplorerUrl(fromNetwork, txHash)
+            : stepId === "mint"
+              ? buildExplorerUrl(toNetwork, txHash)
+              : existing.explorerUrl);
+        return {
+          ...existing,
+          state: mapBridgeStepState(rawStep.state),
+          txHash,
+          explorerUrl,
+        };
+      });
+
+      const sourceLink =
+        stepId === "burn"
+          ? rawStep.explorerUrl ?? buildExplorerUrl(fromNetwork, rawStep.txHash)
+          : undefined;
+      const destinationLink =
+        stepId === "mint"
+          ? rawStep.explorerUrl ?? buildExplorerUrl(toNetwork, rawStep.txHash)
+          : undefined;
+
+      const nextExplorerLinks =
+        sourceLink || destinationLink
+          ? {
+              ...current.explorerLinks,
+              ...(sourceLink ? { source: sourceLink } : {}),
+              ...(destinationLink ? { destination: destinationLink } : {}),
+            }
+          : current.explorerLinks;
+
+      return {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        steps: nextSteps,
+        explorerLinks: nextExplorerLinks,
+        status: deriveTransferStatus(nextSteps),
+        errorMessage:
+          rawStep.state === "error"
+            ? rawStep.errorMessage ?? current.errorMessage
+            : current.errorMessage,
+      };
+    });
+  };
+
+  const approveHandler = (payload: any) =>
+    applyStepUpdate("approval", payload as BridgeEventPayload);
+  const burnHandler = (payload: any) =>
+    applyStepUpdate("burn", payload as BridgeEventPayload);
+  const attestationHandler = (payload: any) =>
+    applyStepUpdate("attestation", payload as BridgeEventPayload);
+  const mintHandler = (payload: any) =>
+    applyStepUpdate("mint", payload as BridgeEventPayload);
+
+  bridgeKit.on("approve", approveHandler);
+  bridgeKit.on("burn", burnHandler);
+  bridgeKit.on("fetchAttestation", attestationHandler);
+  bridgeKit.on("mint", mintHandler);
+
+  return () => {
+    bridgeKit.off("approve", approveHandler);
+    bridgeKit.off("burn", burnHandler);
+    bridgeKit.off("fetchAttestation", attestationHandler);
+    bridgeKit.off("mint", mintHandler);
+  };
 }
 
 function createPendingTransfer(
@@ -351,6 +492,12 @@ export function BridgeView() {
     );
 
     addTransfer(pendingRecord);
+    const detachEvents = attachBridgeEventHandlers({
+      transferId,
+      fromNetwork,
+      toNetwork,
+      updateTransfer,
+    });
 
     try {
       const result = await bridge({
@@ -364,10 +511,11 @@ export function BridgeView() {
 
       updateTransfer(transferId, (current) => {
         const steps = mapBridgeSteps(result.result, fromNetwork, toNetwork);
+        const status = deriveTransferStatus(steps);
         return {
           ...current,
           updatedAt: new Date().toISOString(),
-          status: "completed",
+          status,
           steps,
           explorerLinks: {
             source: buildExplorerUrl(fromNetwork, result.sourceTxHash),
@@ -389,6 +537,7 @@ export function BridgeView() {
         errorMessage: message,
       }));
     } finally {
+      detachEvents();
       setBridgeStartTime(null);
     }
   };
@@ -517,7 +666,7 @@ export function BridgeView() {
         type="button"
         onClick={handleBridge}
         disabled={!canSubmit}
-        className="w-full rounded-2xl bg-gradient-to-r from-sky-500 via-cyan-400 to-blue-500 px-6 py-4 text-lg font-semibold text-white shadow-[0_0_25px_rgba(14,165,233,0.55)] transition hover:shadow-[0_0_35px_rgba(14,165,233,0.75)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-full rounded-2xl bg-linear-to-r from-sky-500 via-cyan-400 to-blue-500 px-6 py-4 text-lg font-semibold text-white shadow-[0_0_25px_rgba(14,165,233,0.55)] transition hover:shadow-[0_0_35px_rgba(14,165,233,0.75)] disabled:cursor-not-allowed disabled:opacity-50"
       >
         {isConnected ? "Bridge USDC" : "Connect wallet to bridge"}
       </button>
