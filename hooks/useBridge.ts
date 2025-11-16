@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { useAccount, useSwitchChain } from "wagmi";
 import { createAdapterFromProvider } from "@circle-fin/adapter-viem-v2";
 import type { BridgeResult } from "@circle-fin/bridge-kit";
@@ -249,6 +250,7 @@ export function useBridge() {
         throw new Error("One of the selected chains is not supported.");
       }
 
+      let detachProgressListeners: (() => void) | undefined;
       try {
         setState((prev) => ({
           ...prev,
@@ -267,6 +269,8 @@ export function useBridge() {
         if (!provider) {
           throw new Error("MetaMask provider not detected.");
         }
+
+        detachProgressListeners = attachProgressListeners(setState);
 
         if (chainId !== fromChainId) {
           setState((prev) => ({ ...prev, step: "switching-network" }));
@@ -337,6 +341,8 @@ export function useBridge() {
           isLoading: false,
         });
         throw error;
+      } finally {
+        detachProgressListeners?.();
       }
     },
     [address, chainId, connector, isConnected, switchChain]
@@ -358,4 +364,82 @@ declare global {
   interface Window {
     ethereum?: EIP1193Provider;
   }
+}
+
+type BridgeResultStep = BridgeResult["steps"][number];
+
+type BridgeEventName = "approve" | "burn" | "fetchAttestation" | "mint";
+
+type BridgeEventPayload = {
+  method: BridgeEventName;
+  values: BridgeResultStep & {
+    transactionHash?: string;
+    txHash?: string;
+    errorMessage?: string;
+  };
+};
+
+function attachProgressListeners(
+  setState: Dispatch<SetStateAction<BridgeState>>
+) {
+  const updateStep = (nextStep: BridgeStep) => {
+    setState((prev) => {
+      if (
+        prev.step === "error" ||
+        prev.step === "success" ||
+        prev.step === nextStep
+      ) {
+        return prev;
+      }
+
+      return { ...prev, step: nextStep };
+    });
+  };
+
+  const setErrorState = (message?: string) => {
+    setState((prev) => ({
+      ...prev,
+      step: "error",
+      error: message ?? prev.error ?? "Bridge transaction failed.",
+      isLoading: false,
+      result: null,
+    }));
+  };
+
+  const handleBurn = (payload: BridgeEventPayload) => {
+    if (payload.values.state === "error") {
+      setErrorState(payload.values.errorMessage);
+      return;
+    }
+    updateStep("signing-bridge");
+  };
+
+  const handleAttestation = (payload: BridgeEventPayload) => {
+    if (payload.values.state === "error") {
+      setErrorState(
+        payload.values.errorMessage ?? "Failed to fetch Circle attestation."
+      );
+      return;
+    }
+    updateStep("waiting-receive-message");
+  };
+
+  const handleMint = (payload: BridgeEventPayload) => {
+    if (payload.values.state === "error") {
+      setErrorState(
+        payload.values.errorMessage ??
+          "Minting on the destination chain was rejected."
+      );
+    }
+  };
+
+  bridgeKit.on("burn", handleBurn);
+  bridgeKit.on("fetchAttestation", handleAttestation);
+  bridgeKit.on("mint", handleMint);
+
+  return () => {
+    bridgeKit.off("burn", handleBurn);
+    bridgeKit.off("fetchAttestation", handleAttestation);
+    bridgeKit.off("mint", handleMint);
+  };
 }
