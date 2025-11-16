@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { StoredTransfer } from "@/lib/storage";
-import { loadTransfers, persistTransfers } from "@/lib/storage";
+import { clearTransfers, loadTransfers, persistTransfers } from "@/lib/storage";
 
 export function useTransfers() {
   const [transfers, setTransfers] = useState<StoredTransfer[]>(() =>
@@ -46,11 +46,17 @@ export function useTransfers() {
     setTransfers(loadTransfers());
   }, []);
 
+  const resetTransfers = useCallback(() => {
+    clearTransfers();
+    setTransfers([]);
+  }, []);
+
   return {
     transfers,
     addTransfer,
     updateTransfer,
     refreshTransfers,
+    resetTransfers,
   };
 }
 

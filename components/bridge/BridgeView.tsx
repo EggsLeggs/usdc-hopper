@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -165,18 +165,22 @@ function BalanceRow({
 export function BridgeView() {
   const { address } = useAccount();
   
-  const [initialPreferences] = useState(() => loadNetworkPreferences());
-
   // Start with defaults to avoid hydration mismatch
-  const [fromId, setFromId] = useState<HopperNetworkId>(
-    initialPreferences?.fromNetworkId ?? defaultFromNetworkId,
-  );
-  const [toId, setToId] = useState<HopperNetworkId>(
-    initialPreferences?.toNetworkId ?? defaultToNetworkId,
-  );
+  const [fromId, setFromId] =
+    useState<HopperNetworkId>(defaultFromNetworkId);
+  const [toId, setToId] = useState<HopperNetworkId>(defaultToNetworkId);
   const [amount, setAmount] = useState("0");
   const [showDetails, setShowDetails] = useState(false);
   
+  useEffect(() => {
+    const saved = loadNetworkPreferences();
+    if (!saved) return;
+    startTransition(() => {
+      setFromId(saved.fromNetworkId);
+      setToId(saved.toNetworkId);
+    });
+  }, []);
+
   useEffect(() => {
     saveNetworkPreferences({ fromNetworkId: fromId, toNetworkId: toId });
   }, [fromId, toId]);

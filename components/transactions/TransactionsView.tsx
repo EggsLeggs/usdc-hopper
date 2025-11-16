@@ -36,7 +36,8 @@ const statusStyles: Record<
 };
 
 export function TransactionsView() {
-  const { transfers, refreshTransfers, updateTransfer } = useTransfers();
+  const { transfers, refreshTransfers, resetTransfers, updateTransfer } =
+    useTransfers();
   const { forceCheck } = useTransferWatcher(transfers, updateTransfer);
   const [expandedTransferId, setExpandedTransferId] = useState<string | null>(
     null,
@@ -81,6 +82,21 @@ export function TransactionsView() {
           >
             <RefreshCw className="h-4 w-4" />
             Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Clear all stored transfers? This cannot be undone.",
+                )
+              ) {
+                resetTransfers();
+              }
+            }}
+            className="inline-flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-200 hover:border-rose-300/70"
+          >
+            Clear history
           </button>
         </div>
       </div>

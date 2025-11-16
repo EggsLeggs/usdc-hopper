@@ -66,6 +66,13 @@ export function persistTransfers(transfers: StoredTransfer[]) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(transfers));
 }
 
+export function clearTransfers() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(STORAGE_KEY);
+}
+
 export function upsertTransfer(record: StoredTransfer) {
   const current = loadTransfers();
   const updated = [
