@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
 import { formatAmount, formatDateTime, formatDuration } from "@/lib/format";
-import { networkById } from "@/lib/chains";
+import { getNetworkByChainId, networkById } from "@/lib/chains";
 import { useTransfers } from "@/hooks/useTransfers";
 import { useTransferWatcher } from "@/hooks/useTransferWatcher";
 
@@ -36,25 +37,52 @@ const statusStyles: Record<
 
 export function TransactionsView() {
   const { transfers, refreshTransfers, updateTransfer } = useTransfers();
-  useTransferWatcher(transfers, updateTransfer);
+  const { forceCheck } = useTransferWatcher(transfers, updateTransfer);
+  const [expandedTransferId, setExpandedTransferId] = useState<string | null>(
+    null,
+  );
 
   const hasTransfers = transfers.length > 0;
+  const hasPendingTransfers = transfers.some(
+    (transfer) =>
+      transfer.status !== "completed" && transfer.status !== "failed",
+  );
+
+  const toggleDetails = (transferId: string) => {
+    setExpandedTransferId((current) =>
+      current === transferId ? null : transferId,
+    );
+  };
+
+  const formatHash = (hash?: string) =>
+    hash ? `${hash.slice(0, 10)}…${hash.slice(-6)}` : "—";
 
   return (
     <section className="glass-card p-6 sm:p-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="text-sm text-slate-400">Activity</p>
           <h1 className="text-2xl font-semibold text-white">Transactions</h1>
         </div>
-        <button
-          type="button"
-          onClick={refreshTransfers}
-          className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:border-white/30"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={forceCheck}
+            disabled={!hasPendingTransfers}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Loader2 className="h-4 w-4" />
+            Re-check pending
+          </button>
+          <button
+            type="button"
+            onClick={refreshTransfers}
+            className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:border-white/30"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {!hasTransfers ? (
@@ -72,6 +100,7 @@ export function TransactionsView() {
                 <th className="px-4 py-3 text-left">Amount</th>
                 <th className="px-4 py-3 text-left">Status</th>
                 <th className="px-4 py-3 text-left">Explorer</th>
+                <th className="px-4 py-3 text-left">Details</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5 text-slate-200">
@@ -85,6 +114,7 @@ export function TransactionsView() {
                   transfer.explorerLinks?.source;
 
                 return (
+                  <>
                   <tr key={transfer.id}>
                     <td className="px-4 py-4 align-top">
                       <p className="font-semibold text-white">
@@ -133,7 +163,89 @@ export function TransactionsView() {
                         <span className="text-xs text-slate-500">N/A</span>
                       )}
                     </td>
+                    <td className="px-4 py-4 align-top">
+                      <button
+                        type="button"
+                        onClick={() => toggleDetails(transfer.id)}
+                        className="text-xs font-semibold uppercase tracking-wide text-sky-300 hover:text-sky-200"
+                        aria-expanded={expandedTransferId === transfer.id}
+                      >
+                        {expandedTransferId === transfer.id
+                          ? "Hide"
+                          : "Details"}
+                      </button>
+                    </td>
                   </tr>
+                  {expandedTransferId === transfer.id && (
+                    <tr key={`${transfer.id}-details`}>
+                      <td
+                        className="bg-slate-900/40 px-4 py-4 text-sm text-slate-300"
+                        colSpan={6}
+                      >
+                        <div className="space-y-4">
+                          <div className="text-xs uppercase tracking-wide text-slate-500">
+                            Transfer ID · {transfer.id}
+                          </div>
+                          <div className="space-y-3">
+                            {transfer.steps.map((step) => {
+                              const network = step.chainId
+                                ? getNetworkByChainId(step.chainId)
+                                : undefined;
+                              const chainLabel = network
+                                ? `${network.shortName} (${network.chainId})`
+                                : step.chainId
+                                  ? `Chain ${step.chainId}`
+                                  : "Off-chain";
+
+                              return (
+                                <div
+                                  key={step.id}
+                                  className="rounded-xl border border-white/5 bg-white/5 p-3"
+                                >
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                      <p className="text-sm font-semibold text-white">
+                                        {step.label}
+                                      </p>
+                                      <p className="text-xs uppercase tracking-wide text-slate-400">
+                                        {chainLabel}
+                                      </p>
+                                    </div>
+                                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+                                      {step.state}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 text-xs text-slate-400">
+                                    {step.txHash ? (
+                                      step.explorerUrl ? (
+                                        <Link
+                                          href={step.explorerUrl}
+                                          target="_blank"
+                                          className="font-semibold text-sky-300 hover:text-sky-200"
+                                        >
+                                          {formatHash(step.txHash)}
+                                        </Link>
+                                      ) : (
+                                        <span>{formatHash(step.txHash)}</span>
+                                      )
+                                    ) : (
+                                      <span>Tx hash pending</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {transfer.errorMessage && (
+                            <p className="text-sm text-rose-300">
+                              Error: {transfer.errorMessage}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </>
                 );
               })}
             </tbody>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, PlugZap } from "lucide-react";
 import { useAccount, useConnect, useDisconnect } from "wagmi";
 
@@ -15,11 +15,25 @@ export function ConnectButton() {
   const { disconnectAsync } = useDisconnect();
   const [open, setOpen] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
-  const readyConnectors = useMemo(
-    () => connectors.filter((connector) => connector.ready),
-    [connectors],
-  );
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const readyConnectors = useMemo(() => {
+    if (!mounted) return [];
+    // Show connectors that are ready, or if no connectors are ready but we have window.ethereum, show injected connector
+    const ready = connectors.filter((connector) => connector.ready);
+    if (ready.length === 0 && typeof window !== "undefined" && window.ethereum) {
+      // Fallback: if MetaMask is installed but not detected, try to show injected connector anyway
+      const injectedConnector = connectors.find((c) => c.id === "injected" || c.id.includes("injected"));
+      if (injectedConnector) {
+        return [injectedConnector];
+      }
+    }
+    return ready;
+  }, [connectors, mounted]);
 
   const handleConnect = async (connectorId: string) => {
     setIsBusy(true);

@@ -79,13 +79,44 @@ export function upsertTransfer(record: StoredTransfer) {
 
 export function mutateTransfer(
   id: string,
-  updater: (transfer: StoredTransfer) => StoredTransfer,
+  updater: (transfer: StoredTransfer) => StoredTransfer
 ) {
   const current = loadTransfers();
   const updated = current.map((transfer) =>
-    transfer.id === id ? updater(transfer) : transfer,
+    transfer.id === id ? updater(transfer) : transfer
   );
   persistTransfers(updated);
   return updated;
 }
 
+const NETWORK_PREFERENCES_KEY = "usdc-hopper:network-preferences";
+
+export interface NetworkPreferences {
+  fromNetworkId: HopperNetworkId;
+  toNetworkId: HopperNetworkId;
+}
+
+export function loadNetworkPreferences(): NetworkPreferences | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(NETWORK_PREFERENCES_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as NetworkPreferences;
+  } catch {
+    return null;
+  }
+}
+
+export function saveNetworkPreferences(preferences: NetworkPreferences) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(
+    NETWORK_PREFERENCES_KEY,
+    JSON.stringify(preferences)
+  );
+}

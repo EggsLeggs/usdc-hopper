@@ -24,7 +24,7 @@ export type ArcRouteQuote = {
 export class ArcClient {
   constructor(
     private readonly baseUrl = env.arcApiBase,
-    private readonly apiKey = env.arcApiKey,
+    private readonly apiKey = env.arcApiKey
   ) {}
 
   async quote(params: ArcRouteQuoteParams): Promise<ArcRouteQuote> {
@@ -76,7 +76,24 @@ export class ArcClient {
           [],
       };
     } catch (error) {
-      console.warn("[Arc] Falling back to heuristic quote", error);
+      // Only log non-network errors (e.g., API errors, parsing errors)
+      // Network/DNS errors are expected when API is unavailable and fallback handles them
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const isNetworkError =
+        (error instanceof TypeError &&
+          errorMessage.includes("Failed to fetch")) ||
+        errorMessage.includes("ERR_NAME_NOT_RESOLVED") ||
+        errorMessage.includes("ERR_NETWORK") ||
+        errorMessage.toLowerCase().includes("network error");
+
+      if (!isNetworkError) {
+        console.warn(
+          "[Arc] API error, falling back to heuristic quote:",
+          error
+        );
+      }
+
       return this.buildFallbackQuote(params);
     }
   }
@@ -88,7 +105,11 @@ export class ArcClient {
     const amountOut = Math.max(amount - Number(feeAmount), 0).toFixed(4);
 
     const latencySeconds =
-      params.toNetwork.id === "arc-testnet" ? 75 : params.fromNetwork.id === "arc-testnet" ? 65 : 150;
+      params.toNetwork.id === "arc-testnet"
+        ? 75
+        : params.fromNetwork.id === "arc-testnet"
+        ? 65
+        : 150;
 
     return {
       routeId: `fallback-${Date.now()}`,
@@ -108,4 +129,3 @@ export class ArcClient {
 }
 
 export const arcClient = new ArcClient();
-

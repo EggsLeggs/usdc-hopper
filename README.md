@@ -37,6 +37,7 @@ Create a `.env.local` file based on the template below:
 | Variable | Description |
 | --- | --- |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | WalletConnect Cloud project id (required for QR modal) |
+| `NEXT_PUBLIC_APP_URL` | URL used in WalletConnect metadata (use `http://localhost:3000` for local dev) |
 | `NEXT_PUBLIC_ARC_API_BASE` | Optional custom Arc SDK base URL |
 | `NEXT_PUBLIC_ARC_API_KEY` | Optional Arc API key for authenticated requests |
 | `NEXT_PUBLIC_RPC_ETHEREUM_SEPOLIA` | (Optional) custom RPC for Ethereum Sepolia |

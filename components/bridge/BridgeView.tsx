@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -18,9 +18,14 @@ import {
   type HopperNetworkId,
 } from "@/lib/chains";
 import { formatAmount, formatDuration } from "@/lib/format";
+import {
+  loadNetworkPreferences,
+  saveNetworkPreferences,
+} from "@/lib/storage";
 import { useArcQuote } from "@/hooks/useArcQuote";
 import { useBridge } from "@/hooks/useBridge";
 import { useTransfers } from "@/hooks/useTransfers";
+import { useTransferWatcher } from "@/hooks/useTransferWatcher";
 import { useUsdcBalance } from "@/hooks/useUsdcBalance";
 
 function NetworkSelect({
@@ -159,18 +164,33 @@ function BalanceRow({
 
 export function BridgeView() {
   const { address } = useAccount();
-  const [fromId, setFromId] = useState(defaultFromNetworkId);
-  const [toId, setToId] = useState(defaultToNetworkId);
-  const [amount, setAmount] = useState("100");
+  
+  const [initialPreferences] = useState(() => loadNetworkPreferences());
+
+  // Start with defaults to avoid hydration mismatch
+  const [fromId, setFromId] = useState<HopperNetworkId>(
+    initialPreferences?.fromNetworkId ?? defaultFromNetworkId,
+  );
+  const [toId, setToId] = useState<HopperNetworkId>(
+    initialPreferences?.toNetworkId ?? defaultToNetworkId,
+  );
+  const [amount, setAmount] = useState("0");
   const [showDetails, setShowDetails] = useState(false);
+  
+  useEffect(() => {
+    saveNetworkPreferences({ fromNetworkId: fromId, toNetworkId: toId });
+  }, [fromId, toId]);
 
   const fromNetwork = networkById[fromId];
   const toNetwork = networkById[toId];
 
-  const { transfers, addTransfer } = useTransfers();
+  const { transfers, addTransfer, updateTransfer } = useTransfers();
   const { uiState, execute, reset } = useBridge({
     persistTransfer: addTransfer,
   });
+
+  // Watch for transfer updates
+  useTransferWatcher(transfers, updateTransfer);
 
   const { formatted: balance, isFetching: balanceLoading } = useUsdcBalance(
     fromNetwork,
@@ -183,6 +203,32 @@ export function BridgeView() {
     amount,
     walletAddress: address ?? "",
   });
+
+  // Sync UI state with persisted transfer when it exists
+  const activeTransfer = useMemo(() => {
+    // If we have a transferId, use that (works for both pending and success states)
+    if ("transferId" in uiState && uiState.transferId) {
+      return transfers.find((t) => t.id === uiState.transferId);
+    }
+    // Fallback: If we're in pending state without transferId, look for the most recent active transfer
+    if (uiState.status === "pending") {
+      const active = transfers.find(
+        (t) =>
+          t.status !== "completed" &&
+          t.status !== "failed" &&
+          t.fromNetworkId === fromId &&
+          t.toNetworkId === toId,
+      );
+      return active ?? transfers[0] ?? null;
+    }
+    return null;
+  }, [transfers, uiState, fromId, toId]);
+
+  // Use active transfer's steps if available (they're kept up-to-date by watcher),
+  // otherwise use UI state steps
+  const displaySteps = useMemo(() => {
+    return activeTransfer?.steps ?? uiState.steps;
+  }, [activeTransfer?.steps, uiState.steps]);
 
   const swapNetworks = () => {
     setFromId(toId);
@@ -213,16 +259,18 @@ export function BridgeView() {
   const latestTransfer = transfers[0];
 
   const buttonLabel = useMemo(() => {
-    if (!address) return "Connect wallet";
+    if (!address) return "Connect wallet to bridge";
     if (uiState.status === "pending") return "Bridging…";
+    if (Number(amount) === 0) return "Enter amount to bridge";
+    if (fromId === toId) return "Select different networks";
     return "Bridge USDC";
-  }, [address, uiState.status]);
+  }, [address, uiState.status, amount, fromId, toId]);
 
   const showQuoteState =
     quoteQuery.isFetching && !quoteQuery.data ? "Loading quote…" : null;
 
   return (
-    <div className="mx-auto grid max-w-6xl gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)]">
+    <div className="mx-auto max-w-6xl space-y-8">
       <section className="glass-card p-6 sm:p-8">
         <div className="flex items-center justify-between">
           <div>
@@ -238,30 +286,31 @@ export function BridgeView() {
         </div>
 
         <div className="mt-8 space-y-6">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <NetworkSelect
-              label="From network"
-              value={fromId}
-              onChange={(value) => setFromId(value)}
-              exclude={toId}
-            />
-            <NetworkSelect
-              label="To network"
-              value={toId}
-              onChange={(value) => setToId(value)}
-              exclude={fromId}
-            />
-          </div>
-
-          <div className="flex justify-center">
+          <div className="flex items-end gap-4">
+            <div className="flex-1">
+              <NetworkSelect
+                label="From network"
+                value={fromId}
+                onChange={(value) => setFromId(value)}
+                exclude={toId}
+              />
+            </div>
             <button
               type="button"
               onClick={swapNetworks}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:border-white/30"
+              className="mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:border-white/30"
             >
-              <ArrowDownUp className="h-4 w-4" />
+              <ArrowDownUp className="h-4 w-4 rotate-90" />
               Swap
             </button>
+            <div className="flex-1">
+              <NetworkSelect
+                label="To network"
+                value={toId}
+                onChange={(value) => setToId(value)}
+                exclude={fromId}
+              />
+            </div>
           </div>
 
           <label className="block">
@@ -324,72 +373,74 @@ export function BridgeView() {
         </div>
       </section>
 
-      <section className="glass-card p-6 sm:p-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-slate-400">Circle status</p>
-            <h2 className="text-xl font-semibold text-white">Transfer flow</h2>
+      {uiState.status !== "idle" && (
+        <section className="glass-card p-6 sm:p-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-slate-400">Circle status</p>
+              <h2 className="text-xl font-semibold text-white">Transfer flow</h2>
+            </div>
+            <button
+              className="text-xs font-semibold uppercase tracking-wide text-sky-300"
+              onClick={() => setShowDetails((prev) => !prev)}
+            >
+              {showDetails ? "Hide details" : "Advanced details"}
+            </button>
           </div>
-          <button
-            className="text-xs font-semibold uppercase tracking-wide text-sky-300"
-            onClick={() => setShowDetails((prev) => !prev)}
-          >
-            {showDetails ? "Hide details" : "Advanced details"}
-          </button>
-        </div>
 
-        <div className="mt-6 space-y-5">
-          {uiState.steps.map((step) => (
-            <StatusStep key={step.id} label={step.label} state={step.state} />
-          ))}
-        </div>
+          <div className="mt-6 space-y-5">
+            {displaySteps.map((step) => (
+              <StatusStep key={step.id} label={step.label} state={step.state} />
+            ))}
+          </div>
 
-        {showDetails && (
-          <div className="mt-6 rounded-2xl border border-white/10 bg-slate-900/40 p-4 text-sm text-slate-300">
-            <p className="mb-2 font-semibold text-white">Networks</p>
-            <div className="space-y-1 text-xs text-slate-400">
-              <p>
-                {fromNetwork.label} · Domain {fromNetwork.circleDomain}
+          {showDetails && (
+            <div className="mt-6 rounded-2xl border border-white/10 bg-slate-900/40 p-4 text-sm text-slate-300">
+              <p className="mb-2 font-semibold text-white">Networks</p>
+              <div className="space-y-1 text-xs text-slate-400">
+                <p>
+                  {fromNetwork.label} · Domain {fromNetwork.circleDomain}
+                </p>
+                <p>
+                  {toNetwork.label} · Domain {toNetwork.circleDomain}
+                </p>
+                <p>
+                  TokenMessenger: {fromNetwork.cctpContracts.tokenMessenger}
+                </p>
+                <p>
+                  MessageTransmitter: {fromNetwork.cctpContracts.messageTransmitter}
+                </p>
+              </div>
+              {quoteQuery.data && (
+                <>
+                  <p className="mt-4 mb-2 font-semibold text-white">Arc route</p>
+                  <p>Provider: {quoteQuery.data.provider}</p>
+                  <p>Route id: {quoteQuery.data.routeId}</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {latestTransfer && (
+            <div className="mt-8 rounded-2xl border border-white/5 bg-slate-900/50 p-4 text-sm text-slate-200">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold">Most recent transfer</p>
+                <span className="rounded-full bg-white/10 px-3 py-1 text-xs uppercase tracking-wide text-slate-300">
+                  {latestTransfer.status}
+                </span>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {formatAmount(latestTransfer.amount)} →{" "}
+                {formatAmount(latestTransfer.amountOutEstimated ?? "0")} USDC
               </p>
-              <p>
-                {toNetwork.label} · Domain {toNetwork.circleDomain}
-              </p>
-              <p>
-                TokenMessenger: {fromNetwork.cctpContracts.tokenMessenger}
-              </p>
-              <p>
-                MessageTransmitter: {fromNetwork.cctpContracts.messageTransmitter}
+              <p className="text-xs text-slate-400">
+                {networkById[latestTransfer.fromNetworkId].shortName} →{" "}
+                {networkById[latestTransfer.toNetworkId].shortName}
               </p>
             </div>
-            {quoteQuery.data && (
-              <>
-                <p className="mt-4 mb-2 font-semibold text-white">Arc route</p>
-                <p>Provider: {quoteQuery.data.provider}</p>
-                <p>Route id: {quoteQuery.data.routeId}</p>
-              </>
-            )}
-          </div>
-        )}
-
-        {latestTransfer && (
-          <div className="mt-8 rounded-2xl border border-white/5 bg-slate-900/50 p-4 text-sm text-slate-200">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold">Most recent transfer</p>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs uppercase tracking-wide text-slate-300">
-                {latestTransfer.status}
-              </span>
-            </div>
-            <p className="mt-2 text-lg font-semibold text-white">
-              {formatAmount(latestTransfer.amount)} →{" "}
-              {formatAmount(latestTransfer.amountOutEstimated ?? "0")} USDC
-            </p>
-            <p className="text-xs text-slate-400">
-              {networkById[latestTransfer.fromNetworkId].shortName} →{" "}
-              {networkById[latestTransfer.toNetworkId].shortName}
-            </p>
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      )}
     </div>
   );
 }

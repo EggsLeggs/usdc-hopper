@@ -82,12 +82,37 @@ function createNetwork({
 
   if (!contracts) {
     throw new Error(
-      `No CCTP v2 contracts found for ${label}. Ensure this network supports Bridge Kit.`,
+      `No CCTP v2 contracts found for ${label}. Ensure this network supports Bridge Kit.`
     );
   }
 
-  const explorerTxPattern = circleChain.explorerUrl || "";
-  const blockExplorerUrl = explorerTxPattern.replace("/tx/{hash}", "");
+  const rpcUrl = env.rpcUrls[rpcEnvKey];
+  if (!rpcUrl) {
+    throw new Error(
+      `Missing RPC URL for ${label} (chain ${rpcEnvKey}). Set NEXT_PUBLIC_RPC_${rpcEnvKey} or update env.ts.`
+    );
+  }
+
+  const circleChainIdRaw =
+    typeof circleChain.chainId === "number"
+      ? circleChain.chainId
+      : Number(circleChain.chainId ?? circleChain.chain);
+
+  if (Number.isFinite(circleChainIdRaw) && circleChainIdRaw !== wagmiChain.id) {
+    throw new Error(
+      `Circle chainId (${circleChainIdRaw}) does not match wagmi chain id (${wagmiChain.id}) for ${label}.`
+    );
+  }
+
+  const explorerTxPattern =
+    circleChain.explorerUrl ??
+    (wagmiChain.blockExplorers?.default?.url
+      ? `${wagmiChain.blockExplorers.default.url.replace(/\/$/, "")}/tx/{hash}`
+      : "");
+
+  const blockExplorerUrl = explorerTxPattern
+    ? explorerTxPattern.replace("/tx/{hash}", "")
+    : wagmiChain.blockExplorers?.default?.url ?? "";
 
   return {
     id,
@@ -99,7 +124,7 @@ function createNetwork({
     chainId: circleChain.chainId ?? wagmiChain.id,
     wagmiChain,
     circleChain,
-    rpcUrl: env.rpcUrls[rpcEnvKey],
+    rpcUrl,
     blockExplorerUrl,
     explorerTxPattern,
     usdcAddress: circleChain.usdcAddress as `0x${string}`,
@@ -165,13 +190,13 @@ export const networkById: Record<HopperNetworkId, HopperNetwork> =
   }, {} as Record<HopperNetworkId, HopperNetwork>);
 
 export function getNetworkByChainId(
-  chainId: number,
+  chainId: number
 ): HopperNetwork | undefined {
   return supportedNetworks.find((network) => network.chainId === chainId);
 }
 
 export const defaultFromNetworkId: HopperNetworkId = "ethereum-sepolia";
-export const defaultToNetworkId: HopperNetworkId = "base-sepolia";
+export const defaultToNetworkId: HopperNetworkId = "arc-testnet";
 
 const publicClients = new Map<number, ReturnType<typeof createPublicClient>>();
 
@@ -182,10 +207,9 @@ export function getPublicClient(chain: Chain) {
       createPublicClient({
         chain,
         transport: http(chain.rpcUrls.default.http[0]!),
-      }),
+      })
     );
   }
 
   return publicClients.get(chain.id)!;
 }
-

@@ -8,6 +8,11 @@ const defaultRpcUrls = {
 export const env = {
   walletConnectProjectId:
     process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "",
+  appUrl:
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.NODE_ENV === "development"
+      ? "http://localhost:3000"
+      : "https://usdc-hopper.dev"),
   arcApiBase:
     process.env.NEXT_PUBLIC_ARC_API_BASE ?? "https://api.arc.market",
   arcApiKey: process.env.NEXT_PUBLIC_ARC_API_KEY,
